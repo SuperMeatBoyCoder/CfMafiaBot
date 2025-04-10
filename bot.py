@@ -1,27 +1,47 @@
-from telegram.ext import Updater, CommandHandler
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+import requests
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    User
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
+)
 import random
+import logging
+import asyncio
+from tasks import tasks
 
 # --- GLOBALS --- #
 game_state = False  # True - currently going, false - passive
+night_state = False # True - night, false - day
 registration_state = False  # True - currently going, false - passive
-players = dict()  # Key: ID of player, value: object of Player class
+players: dict[int, "Player"] = dict()  # Key: ID of player, value: object of Player class
 quantity = 0
-used = []
-roles = dict()  # Key: role, value: ID of player
-mafioso_list = []
-reg_message_id = None
-game_chat_id = None
-last_message_id = dict()  # Key : id of player, value: last message id
+roles: dict[str, int | list[int]] = dict()  # Key: role, value: ID of player
+reg_message_id: None | int = None
+game_chat_id: None | int = None
+day_count = 0
 
 # --- CONSTANTS --- #
-BOT_TOKEN = "416682801:AAHygzvxHclVevhrwIufoUuNCAgJueh2GpI"
+from bot_token import BOT_TOKEN
+
 REGISTRATION_TIME = 60  # In seconds
+NIGHT_TIME = 9 # In seconds
+DAY_TIME = 10 # In seconds
+VOTING_TIME = 25 # In seconds
 REQUIRED_PLAYERS = 1
 LEADERS_INNOCENTS = ['detective']
 SPECIAL_INNOCENTS = ['doctor', 'prostitute']
 SPECIAL_MAFIOSI = ['godfather']
 OTHERS = ['maniac']
+REQUEST_MAX_TRIES = 3
 '''
     QUANTITY_OF_ROLES
     It is a dictionary, keys of which are a number of players, the values are the quantities of roles:
@@ -33,7 +53,7 @@ OTHERS = ['maniac']
         5. Special mafiosi. Randomly selected from SPECIAL_MAFIOSI
         6. Individuals, such as maniac. Randomly selected from  OTHERS 
 '''
-QUANTITY_OF_ROLES = {1: '0 0 0 1 0 0', 2: '1 0 0 1 0 0', 3: '1 1 0 1 0 0', 4: '1 1 0 2 0 0', 5: '1 2 0 2 0 0',
+QUANTITY_OF_ROLES = {1: '1 0 0 0 0 0', 2: '1 0 0 1 0 0', 3: '1 1 0 1 0 0', 4: '1 2 0 1 0 0', 5: '1 2 0 2 0 0',
                      6: '1 3 0 2 0 0', 7: '1 2 1 3 0 0', 8: '1 3 1 2 1 0', 9: '1 3 1 3 1 0', 10: '1 3 1 3 1 1',
                      11: '1 5 1 2 1 1', 12: '1 5 2 2 1 1', 13: '1 6 2 2 1 1', 14: '1 6 2 3 1 1', 15: '1 7 2 3 1 1',
                      16: '1 7 2 4 1 1'}
@@ -63,15 +83,24 @@ ROLE_GREETING = {
                           "However, you have to remember that the cooperation with other mafiosi is crucial for you.",
                           "Good luck, Mafioso, and let the dark forces prevail!"])}
 
-updater = Updater(token=BOT_TOKEN)
-dispatcher = updater.dispatcher
+# Enable logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger("MafiaBot")
 
 
 class Player:
     def __init__(self, user):
-        self.ID = user.id
-        self.name = user.first_name + (' ' + user.last_name if user.last_name else '')
-        self.nick = user.username
+        if isinstance(user, User):
+            self.ID = user.id
+            self.name = user.first_name + (' ' + user.last_name if user.last_name else '')
+            self.nick = user.username
+        else:
+            self.ID = 0
+            self.name = user
+            self.nick = user
+        self.cf_name = None
         self.card = None
         self.is_alive = True
         self.is_abilities_active = True
@@ -79,9 +108,12 @@ class Player:
         self.able_to_vote = True
         self.able_to_discuss = True
         self.chat_id = None
+        self.difficulty = 800
+        self.task = None
+        self.voted_amount = 0
 
 
-def distribute_roles():
+async def distribute_roles():
     global roles
     global players
     global QUANTITY_OF_ROLES
@@ -90,9 +122,8 @@ def distribute_roles():
     global SPECIAL_INNOCENTS
     global OTHERS
     global quantity
-    global mafioso_list
 
-    print('Distributing roles...')
+    logger.info('Distributing roles...')
 
     roles_q = list(map(int, QUANTITY_OF_ROLES[quantity].split(' ')))
 
@@ -135,162 +166,355 @@ def distribute_roles():
     for i in range(roles_q[3]):
         players[rand_players[ind]].card = 'Mafioso'
         roles['Mafioso'].append(rand_players[ind])
-        mafioso_list.append(
-            '[' + players[rand_players[ind]].name + ']' + '(tg://user?id=' + str(rand_players[ind]) + ')')
         ind += 1
-
-        print('Roles distribution finished:')
-        for key, value in roles.items():
-            if key == 'Mafioso':
-                print('Mafiosi: {}'.format(', '.join([players[i].name for i in value])))
-            elif key == 'Innocent':
-                print('Innocents: {}'.format(', '.join([players[i].name for i in value])))
-            else:
-                print(key + ': ' + players[value].name)
+    logger.info('Roles distribution finished:')
+    for key, value in roles.items():
+        if key == 'Mafioso':
+            logger.info('Mafiosi: %s', ', '.join([players[i].name for i in value]))
+        elif key == 'Innocent':
+            logger.info('Innocents: %s', ', '.join([players[i].name for i in value]))
+        else:
+            logger.info('%s: %s', key, players[value].name)
 
     # These ifs are for debug, as situation with no mafiosi/innocents is prohibited by the rules
-    if not roles['Mafioso']:
-        del roles['Mafioso']
+    # if not roles['Mafioso']:
+    #     del roles['Mafioso']
+    #
+    # if not roles['Innocent']:
+    #     del roles['Innocent']
 
-    if not roles['Innocent']:
-        del roles['Innocent']
 
-
-def send_roles(bot):
+async def send_roles(context: ContextTypes.DEFAULT_TYPE):
     global roles
-    global mafioso_list
     global players
     global ROLE_GREETING
-    global last_message_id
 
-    print('Sending roles...')
+    logger.info('Sending roles...')
 
     for role, player in roles.items():
         if role == 'Mafioso':
             for pl in player:
-                bot.send_message(chat_id=pl, text=ROLE_GREETING[role])
-                if len(mafioso_list) > 1:
-                    bot.send_message(chat_id=pl, text='Other mafiosi: \n{}'.format(
-                        '\n'.join(i for i in mafioso_list if not (str(pl) in i))),
-                                     parse_mode='Markdown')
-                last_message_id[pl] += 1
+                await context.bot.send_message(chat_id=pl, text=ROLE_GREETING[role])
+                if len(roles['Mafioso']) > 1:
+                    await context.bot.send_message(
+                        chat_id=pl,
+                        text='Other mafiosi: \n{}'.format('\n'.join(players[i].name for i in roles['Mafioso'] if pl != i)),
+                        parse_mode='Markdown'
+                    )
         elif role == 'Innocent':
             for pl in player:
-                bot.send_message(chat_id=pl, text=ROLE_GREETING[role])
-                last_message_id[pl] += 1
+                await context.bot.send_message(chat_id=pl, text=ROLE_GREETING[role])
         else:
-            bot.send_message(chat_id=player, text=ROLE_GREETING[role])
-            last_message_id[player] += 1
+            await context.bot.send_message(chat_id=player, text=ROLE_GREETING[role])
 
-    print('Roles were sent successfully')
+    logger.info('Roles were sent successfully')
 
+async def send_tasks(context: ContextTypes.DEFAULT_TYPE):
+    logger.info('Sending tasks...')
+
+    to_send = []
+    for role, player in roles.items():
+        if role == 'Innocent':
+            for pl in player:
+                to_send.append(pl)
+        elif role != 'Mafioso':
+            to_send.append(player)
+
+    for pl in to_send:
+        problem = random.choice(tasks[players[pl].difficulty])
+        players[pl].task = str(problem["contestId"]) + '/' + problem["index"]
+        await context.bot.send_message(chat_id=pl, text=f"Your new task:\nhttps://codeforces.com/problemset/problem/{players[pl].task}")
+
+    logger.info('Tasks were sent successfully')
+
+async def check_tasks(context: ContextTypes.DEFAULT_TYPE):
+    to_check = []
+    for role, player in roles.items():
+        if role == 'Innocent':
+            for pl in player:
+                to_check.append(pl)
+        elif role != 'Mafioso':
+            to_check.append(player)
+
+    for pl in to_check:
+        solved = False
+        try:
+            r = dict()
+            for i in range(REQUEST_MAX_TRIES):
+                r = requests.get(f"https://codeforces.com/api/user.status?handle={players[pl].cf_name}&from=1&count=2").json()
+                if r['status'] == 'OK':
+                    break
+            if r['status'] != 'OK':
+                raise ConnectionError("Unnable to connect")
+            for solve_try in r['result']:
+                problem = solve_try['problem']
+                if "contestId" not in problem or "index" not in problem or "verdict" not in solve_try:
+                    continue
+                task = str(problem["contestId"]) + '/' + problem["index"]
+                if task == players[pl].task and solve_try["verdict"] == 'OK':
+                    solved = True
+        except Exception as e:
+            logger.error(f"Error checking tasks: {e}")
+        if solved:
+            await context.bot.send_message(chat_id=pl, text=f"Congratulation with solving your task!")
+        else:
+            await context.bot.send_message(chat_id=pl, text=f"You did not solve your task in time.")
+            await kill_player(context, pl)
 
 # Role functions
-# IMPORTANT: name functions as roles, in lowercase
-def detective(bot):
-    global roles
-    global players
+async def detective(context: ContextTypes.DEFAULT_TYPE):
+    logger.info('Detective woke up')
 
-    print('Detective woke up')
+    checklist = []
+    for role, _id in roles.items():
+        if role == 'Innocent' or role == 'Mafioso':
+            for inn in _id:
+                checklist.append([InlineKeyboardButton(players[inn].name, callback_data=f'doc_check:{inn}:{day_count}')])
+        elif role != 'Detective':
+            checklist.append([InlineKeyboardButton(players[_id].name, callback_data=f'doc_check:{_id}:{day_count}')])
+    checklist.sort(key=lambda x: -int(x[0].callback_data.split(':')[1]))
 
-    check_or_shoot = InlineKeyboardMarkup(
-        [[InlineKeyboardButton('Shoot', callback_data='detective_shoot'),
-          InlineKeyboardButton('Check identity', callback_data='detective_check')]])
+    await context.bot.send_message(
+        chat_id=roles['Detective'],
+        text='Confirm your suspicions',
+        reply_markup=InlineKeyboardMarkup(checklist)
+    )
 
-    bot.send_message(chat_id=roles['Detective'], text='Are you feeling pacifistic tonight?',
-                     reply_markup=check_or_shoot)
-    last_message_id[roles['Detective']] += 1
+async def mafioso(context: ContextTypes.DEFAULT_TYPE):
+    logger.info('Mafiosi woke up')
 
-
-def mafioso(bot):
-    global roles
-    global players
-    global mafioso_list
-
-    print('Mafiosi woke up')
-
-    shoot_voting = []
+    shoot_list = []
     for role, _id in roles.items():
         if role == 'Innocent':
             for inn in _id:
-                shoot_voting.append([InlineKeyboardButton(players[inn].name, callback_data='maf_kill:{}'.format(inn))])
+                shoot_list.append([InlineKeyboardButton(players[inn].name, callback_data=f'maf_kill:{inn}:{day_count}')])
         elif role != 'Mafioso':
-            shoot_voting.append([InlineKeyboardButton(players[_id].name, callback_data='maf_kill:{}'.format(_id))])
+            shoot_list.append([InlineKeyboardButton(players[_id].name, callback_data=f'maf_kill:{_id}:{day_count}')])
+    shoot_list.sort(key=lambda x: -int(x[0].callback_data.split(':')[1]))
 
     for i in roles['Mafioso']:
-        bot.send_message(chat_id=i, text='Choose a target properly',
-                         reply_markup=InlineKeyboardMarkup(shoot_voting))
-        last_message_id[i] += 1
+        await context.bot.send_message(
+            chat_id=i,
+            text='Choose a target properly',
+            reply_markup=InlineKeyboardMarkup(shoot_list)
+        )
+
+# on maf_kill:x:y callback
+async def mafioso_fire(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, player_id, message_day = query.data.split(':')
+    player_id = int(player_id)
+    message_day = int(message_day)
+    if message_day == day_count and night_state and game_state:
+        players[player_id].difficulty += 200
+        await query.edit_message_text(text=f"You shot in {players[player_id].name}! \n"\
+                                           f"His problem will be at {players[player_id].difficulty} difficulty")
+    else:
+        await query.edit_message_text(text="Too late!")
+
+# on doc_check:x:y callback
+async def detective_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, player_id, message_day = query.data.split(':')
+    player_id = int(player_id)
+    message_day = int(message_day)
+    if message_day == day_count and night_state and game_state:
+        await query.edit_message_text(text=f"Role of {players[player_id].name} is {players[player_id].card}")
+    else:
+        await query.edit_message_text(text="Too late!")
+
+async def innocent(context):
+    for i in roles['Innocent']:
+        await context.bot.send_message(
+            chat_id=i,
+            text='Sleep tight!',
+        )
 
 
-def innocent():
-    print('Innocents are still asleep!')
-
-
-# Main
-def game(bot, chat_id):
+async def night_cycle(context: ContextTypes.DEFAULT_TYPE, chat_id):
     global game_state
-    global players
-    global roles
-    global ROLES_PRIORITY
-
-    game_state = True
-    print('Game started')
-    bot.send_message(chat_id=chat_id, text='Game is started. And may the strongest win.')
-
-    distribute_roles()
-    send_roles(bot)
-
-    ordered_roles = sorted(roles.keys(),
-                           key=lambda x: ROLES_PRIORITY.index(x.lower()))
-
+    global day_count
+    global night_state
+    night_state = True
+    day_count += 1
+    await joeover(context)
+    if not game_state:
+        return
+    await context.bot.send_message(chat_id=chat_id, text=f'Night {day_count} starts')
+    ordered_roles = sorted(roles.keys(), key=lambda x: ROLES_PRIORITY.index(x.lower()))
     for i in ordered_roles:
-        exec(i.lower() + '(bot)')  # Functions for each role are named identically to roles themselves
+        i = i.lower()
+        if i == 'detective':
+            await detective(context)
+        elif i == 'mafioso':
+            await mafioso(context)
+        elif i == 'innocent':
+            await innocent(context)
+        # other role functions here
+    await asyncio.sleep(NIGHT_TIME)
+    await day_cycle(context, chat_id)
 
+
+async def voting(context: ContextTypes.DEFAULT_TYPE, chat_id):
+
+    assert quantity >= 2, "Game must end with 1 or less players"
+    for p in players.values():
+        p.voted_amount = 0
+    await context.bot.send_message(chat_id=chat_id, text=f'Voting starts!')
+    checklist = []
+    for p in players.values():
+        checklist.append([InlineKeyboardButton(p.name, callback_data=f'vote:{p.ID}:{day_count}')])
+    checklist.sort(key=lambda x: -int(x[0].callback_data.split(':')[1]))
+    for p in players.values():
+        if p.ID == 0:
+            continue
+        await context.bot.send_message(
+            chat_id=p.ID,
+            text='Voting',
+            reply_markup=InlineKeyboardMarkup(checklist)
+        )
+    await asyncio.sleep(VOTING_TIME)
+    order = sorted(players.values(), key=lambda x: -x.voted_amount)
+    results = '\n'.join([str(x.name) + ": " + str(x.voted_amount) + " votes" for x in order])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f'Voting results:\n{results}'
+    )
+    if order[0].voted_amount > order[1].voted_amount:
+        if order[0].ID == 0:
+            await context.bot.send_message(chat_id=chat_id, text=f'Office decided to not do anything')
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=f'Office decided to make a denunciation about {order[0].name}!\n')
+            await kill_player(context, order[0].ID)
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=f'Office could not decide...')
+
+
+
+# on vote:x:y callback
+async def vote_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, player_id, message_day = query.data.split(':')
+    player_id = int(player_id)
+    message_day = int(message_day)
+    if message_day == day_count and (not night_state) and game_state:
+        players[player_id].voted_amount += 1
+        await query.edit_message_text(text=f"You voted for {players[player_id].name}")
+    else:
+        await query.edit_message_text(text="Too late!")
+
+
+async def day_cycle(context: ContextTypes.DEFAULT_TYPE, chat_id):
+    global game_state
+    global night_state
+    night_state = False
+    await joeover(context)
+    if not game_state:
+        return
+    await context.bot.send_message(chat_id=chat_id, text=f'Day {day_count} starts')
+    await context.bot.send_message(chat_id=chat_id, text=f'{quantity} souls remain...')
+    await send_tasks(context)
+    await asyncio.sleep(DAY_TIME)
+
+    await check_tasks(context)
+    await voting(context, chat_id)
+    for p in players.values():
+        p.difficulty += 100
+    await context.bot.send_message(chat_id=chat_id, text='Problems became a little harder')
+    await night_cycle(context, chat_id)
+
+
+async def kill_player(context: ContextTypes.DEFAULT_TYPE, player_id):
+    global quantity
+    if player_id in players:
+        card = players[player_id].card
+        if card == 'Mafioso' or card == 'Innocent':
+            roles[card].remove(player_id)
+        else:
+            del roles[card]
+        quantity -= 1
+        del players[player_id]
+        await context.bot.send_message(chat_id=game_chat_id, text=f"RIP {players[player_id].name}")
+
+
+async def joeover(context: ContextTypes.DEFAULT_TYPE):
+    global game_state
+    global registration_state
+    global quantity
+    if len(roles['Mafioso']) * 2 >= quantity:
+        await context.bot.send_message(chat_id=game_chat_id, text='Mafia won!')
+        await stop(context)
+        return
+    if len(roles['Mafioso']) == 0:
+        await context.bot.send_message(chat_id=game_chat_id, text='Innocent won!')
+        await stop(context)
+        return
+
+# Mainloop
+async def game(context: ContextTypes.DEFAULT_TYPE, chat_id):
+    global game_state
+    global day_count
+    day_count = 0
+    game_state = True
+    logger.info('Game started')
+    await context.bot.send_message(chat_id=chat_id, text='Game is started. And may the strongest win.')
+
+    await distribute_roles()
+    await send_roles(context)
+
+    players[0] = Player('skip')
+
+    await night_cycle(context, chat_id)
 
 # Starts on '/game'
-def registration_command(bot, update):
+async def registration_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global game_state
     global quantity
     global registration_state
-    global players
     global reg_message_id
     global game_chat_id
 
     if not (game_state or registration_state):
-        bot.send_message(chat_id=update.message.chat_id, text='And may the odds be ever in your favor')
+        await update.message.reply_text('And may the odds be ever in your favor')
         registration_state = True
 
-        keyboard = [[InlineKeyboardButton('Register!', url="https://t.me/goodgoosebot?start=Register")]]
+        keyboard = [[InlineKeyboardButton('Register!', url="https://t.me/cf_mafia_bot?start=Register")]]
         msg_markup = InlineKeyboardMarkup(keyboard)
 
         reg_message_id = update.message.message_id + 2
         game_chat_id = update.message.chat_id
-        bot.send_message(chat_id=update.message.chat_id, text='*Registration is active!*',
-                         parse_mode="Markdown", reply_markup=msg_markup)
+        sent_msg = await update.message.reply_text(
+            '*Registration is active!*',
+            parse_mode="Markdown",
+            reply_markup=msg_markup
+        )
 
-        bot.pin_chat_message(chat_id=update.message.chat_id, message_id=reg_message_id, disable_notification=True)
+        await context.bot.pin_chat_message(
+            chat_id=update.message.chat_id,
+            message_id=sent_msg.message_id,
+            disable_notification=True
+        )
     else:
-        bot.send_message(chat_id=update.message.chat_id, text='Currently running')
+        await update.message.reply_text('Currently running')
 
-
-# On '/stop'
-def stop_command(bot, update):
+async def stop(context: ContextTypes.DEFAULT_TYPE):
     global game_state
     global registration_state
     global quantity
-    global players
-    global mafioso_list
-    global roles
     global reg_message_id
-    global registration_state
+    global game_chat_id
 
     if game_state or registration_state:
-        bot.send_message(chat_id=update.message.chat_id, text='¡Sí, señor!')
 
         if registration_state:
-            bot.delete_message(chat_id=update.message.chat_id, message_id=reg_message_id)
-            bot.delete_message(chat_id=update.message.chat_id, message_id=reg_message_id - 1)
+            try:
+                await context.bot.delete_message(chat_id=game_chat_id, message_id=reg_message_id)
+                await context.bot.delete_message(chat_id=game_chat_id, message_id=reg_message_id - 1)
+            except Exception as e:
+                logger.error(f"Error deleting messages: {e}")
 
         game_state = False
         registration_state = False
@@ -298,91 +522,130 @@ def stop_command(bot, update):
         quantity = 0
         players.clear()
         roles.clear()
-        used.clear()
-        mafioso_list.clear()
+        await context.bot.send_message(chat_id=game_chat_id, text='Game aborted successfully.')
+        reg_message_id = None
+        game_chat_id = None
 
-        bot.send_message(chat_id=update.message.chat_id, text='Game aborted successfully.')
-    else:
-        bot.send_message(chat_id=update.message.chat_id, text='There is no active game to stop :(')
+# On '/stop'
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    member = await context.bot.get_chat_member(update.message.chat_id, update.message.from_user.id)
+    if member.status not in ("administrator", "creator"):
+        await update.message.reply_text('Sorry, only admins are able to stop the game.')
+        return
+    await stop(context)
 
+# On text messages
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
+    if registration_state and user_id == chat_id:
+        if players[user_id].cf_name is None:
+            await update.message.reply_text(f"Handle {update.message.text} added!")
+        else:
+            await update.message.reply_text(f"Handle changed to {update.message.text}! Previous handle: {players[user_id].cf_name}")
+        players[user_id].cf_name = update.message.text
 
 # On '/start'
-def reg_player_command(bot, update):
+async def reg_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global registration_state
     global quantity
     global reg_message_id
     global game_chat_id
-    global last_message_id
 
     if registration_state:
         new_user = Player(update.message.from_user)
 
-        if new_user.ID in used:
-            bot.send_message(chat_id=update.message.chat_id,
-                             text='You are already registered. Please wait for other players :)')
+        if new_user.ID in players:
+            await update.message.reply_text('You are already registered. Please wait for other players :)')
             return
 
         players[new_user.ID] = new_user
         quantity += 1
 
-        print('Player {}: {}, {}'.format(quantity, new_user.name, new_user.ID))
+        logger.info('Player %s: %s, %s', quantity, new_user.name, new_user.ID)
 
-        last_message_id[new_user.ID] = update.message.message_id
-        used.append(new_user.ID)
-
-        keyboard = [[InlineKeyboardButton('Register!', url="https://t.me/goodgoosebot?start=Register")]]
+        keyboard = [[InlineKeyboardButton('Register!', url="https://t.me/cf_mafia_bot?start=Register")]]
         msg_markup = InlineKeyboardMarkup(keyboard)
 
-        bot.edit_message_text(chat_id=game_chat_id, message_id=reg_message_id,
-                              text='Registration is active!\n\n*Registered players:* \n{}\n\nTotal: *{}*'.format(
-                                  ', '.join(
-                                      ['[' + i.name + ']' + '(tg://user?id=' + str(i.ID) + ')' for _, i in
-                                       players.items()]),
-                                  str(quantity)), parse_mode="Markdown", reply_markup=msg_markup)
+        await update.message.reply_text('Successful registration. Please send your handle on codeforces.com in the next message')
+
+        await context.bot.edit_message_text(
+            chat_id=game_chat_id,
+            message_id=reg_message_id,
+            text='Registration is active!\n\n*Registered players:* \n{}\n\nTotal: *{}*'.format(
+                ', '.join(['[' + i.name + ']' + '(tg://user?id=' + str(i.ID) + ')' for _, i in players.items()]),
+                str(quantity)),
+            parse_mode="Markdown",
+            reply_markup=msg_markup
+        )
+        await context.bot.send_message(chat_id=game_chat_id, text=f"Hello {new_user.name}!")
     else:
-        bot.send_message(chat_id=update.message.chat_id,
-                         text='Registration is not active right now. Please call "/game" to start registration')
+        await update.message.reply_text(
+            'Registration is not active right now. Please call "/game" to start registration'
+        )
 
 
-# On '/begin_game'
-def begin_game_command(bot, update):
+
+async def default_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    logger.warning("Unexpected query: %s", query.data)
+
+# On '/begin'
+async def begin_game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global quantity
     global registration_state
     global game_state
     global REQUIRED_PLAYERS
     global reg_message_id
 
+    member = await context.bot.get_chat_member(update.message.chat_id, update.message.from_user.id)
+    if member.status not in ("administrator", "creator"):
+        await update.message.reply_text('Sorry, only admins are able to begin the game.')
+        return
     if game_state:
-        bot.send_message(chat_id=update.message.chat_id, text='Game is already running!')
+        await update.message.reply_text('Game is already running!')
+        return
+    if not registration_state:
+        await update.message.reply_text('Please call "/game" to begin the registration.')
+        return
+    if quantity < REQUIRED_PLAYERS:
+        await update.message.reply_text(
+            '\n'.join(['Too small amount of players :(',
+                      'Current amount of players: {}'.format(quantity),
+                      'Amount of players required: {}.'.format(REQUIRED_PLAYERS)])
+        )
+        return
+    without_cf_name = list(map(lambda p: p.name, filter(lambda p: p.cf_name is None, players.values())))
+    if len(without_cf_name):
+        await update.message.reply_text(', '.join(without_cf_name) + " must submit their handle(s)!")
         return
 
-    if registration_state:
-        if quantity >= REQUIRED_PLAYERS:
-            bot.send_message(chat_id=update.message.chat_id,
-                             text='Registration was successful! Game is starting...')
-            registration_state = False
+    await update.message.reply_text('Registration was successful! Game is starting...')
+    registration_state = False
+    try:
+        await context.bot.delete_message(chat_id=update.message.chat_id, message_id=reg_message_id)
+        await context.bot.delete_message(chat_id=update.message.chat_id, message_id=reg_message_id - 1)
+    except Exception as e:
+        logger.error(f"Error deleting messages: {e}")
+    asyncio.create_task(game(context, update.message.chat_id))
 
-            bot.delete_message(chat_id=update.message.chat_id, message_id=reg_message_id)
-            bot.delete_message(chat_id=update.message.chat_id, message_id=reg_message_id - 1)
+def main() -> None:
+    """Run the bot."""
+    application = Application.builder().token(BOT_TOKEN).build()
 
-            game(bot, update.message.chat_id)
-        else:
-            bot.send_message(chat_id=update.message.chat_id,
-                             text='\n'.join(['Too small amount of players :(',
-                                             'Current amount of players: {}'.format(quantity),
-                                             'Amount of players required: {}.'.format(REQUIRED_PLAYERS)]))
-    else:
-        bot.send_message(chat_id=update.message.chat_id, text='Please call "/game" to begin the registration.')
+    application.add_handler(CommandHandler("game", registration_command))
+    application.add_handler(CommandHandler("stop", stop_command))
+    application.add_handler(CommandHandler("start", reg_player_command))
+    application.add_handler(CommandHandler("begin", begin_game_command))
+    application.add_handler(CallbackQueryHandler(mafioso_fire, pattern=r"^maf_kill:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(detective_check, pattern=r"^doc_check:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(vote_handler, pattern=r"^vote:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(default_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+
+    application.run_polling()
 
 
-game_command_handler = CommandHandler('game', registration_command)
-stop_command_handler = CommandHandler('stop', stop_command)
-reg_command_handler = CommandHandler('start', reg_player_command)
-start_command_handler = CommandHandler('begin_game', begin_game_command)
-
-dispatcher.add_handler(game_command_handler)
-dispatcher.add_handler(stop_command_handler)
-dispatcher.add_handler(reg_command_handler)
-dispatcher.add_handler(start_command_handler)
-
-updater.start_polling(clean=True)
+if __name__ == "__main__":
+    main()
