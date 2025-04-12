@@ -33,10 +33,10 @@ day_count = 0
 from bot_token import BOT_TOKEN
 
 REGISTRATION_TIME = 60  # In seconds
-NIGHT_TIME = 9 # In seconds
-DAY_TIME = 10 # In seconds
-VOTING_TIME = 25 # In seconds
-REQUIRED_PLAYERS = 1
+NIGHT_TIME = 60 # In seconds
+DAY_TIME = 420 # In seconds
+VOTING_TIME = 60 # In seconds
+REQUIRED_PLAYERS = 4
 LEADERS_INNOCENTS = ['detective']
 SPECIAL_INNOCENTS = ['doctor', 'prostitute']
 SPECIAL_MAFIOSI = ['godfather']
@@ -54,9 +54,9 @@ REQUEST_MAX_TRIES = 3
         6. Individuals, such as maniac. Randomly selected from  OTHERS 
 '''
 QUANTITY_OF_ROLES = {1: '1 0 0 0 0 0', 2: '1 0 0 1 0 0', 3: '1 1 0 1 0 0', 4: '1 2 0 1 0 0', 5: '1 2 0 2 0 0',
-                     6: '1 3 0 2 0 0', 7: '1 2 1 3 0 0', 8: '1 3 1 2 1 0', 9: '1 3 1 3 1 0', 10: '1 3 1 3 1 1',
-                     11: '1 5 1 2 1 1', 12: '1 5 2 2 1 1', 13: '1 6 2 2 1 1', 14: '1 6 2 3 1 1', 15: '1 7 2 3 1 1',
-                     16: '1 7 2 4 1 1'}
+                     6: '1 3 0 2 0 0', 7: '1 4 0 2 0 0', 8: '1 5 0 2 0 0', 9: '1 6 0 2 0 0', 10: '1 6 0 3 0 0',
+                     11: '1 7 0 3 0 0', 12: '1 8 0 3 0 0', 13: '1 8 0 4 0 0', 14: '1 9 0 4 0 0', 15: '1 10 0 4 0 0',
+                     16: '1 11 0 4 0 0'}
 ROLE_GREETING = {
     "Detective": '\n'.join(["You are a Team-Leader Dylan Burns.",
                            "Your goal is to get rid of all QA-engineers in your town, while doing planned tasks",
@@ -230,6 +230,7 @@ async def check_tasks(context: ContextTypes.DEFAULT_TYPE):
             r = dict()
             for i in range(REQUEST_MAX_TRIES):
                 r = requests.get(f"https://codeforces.com/api/user.status?handle={players[pl].cf_name}&from=1&count=2").json()
+                await asyncio.sleep(1)
                 if r['status'] == 'OK':
                     break
             if r['status'] != 'OK':
@@ -295,7 +296,7 @@ async def mafioso_fire(update: Update, context: ContextTypes.DEFAULT_TYPE):
     player_id = int(player_id)
     message_day = int(message_day)
     if message_day == day_count and night_state and game_state:
-        players[player_id].difficulty += 200
+        players[player_id].difficulty += 100
         await query.edit_message_text(text=f"You send a massive bug report to {players[player_id].name}! \n"\
                                            f"His problems will be at {players[player_id].difficulty} difficulty")
     else:
@@ -412,9 +413,6 @@ async def day_cycle(context: ContextTypes.DEFAULT_TYPE, chat_id):
 
     await check_tasks(context)
     await voting(context, chat_id)
-    for p in players.values():
-        p.difficulty += 100
-    await context.bot.send_message(chat_id=chat_id, text='Problems became a little harder')
     await night_cycle(context, chat_id)
 
 
@@ -427,8 +425,8 @@ async def kill_player(context: ContextTypes.DEFAULT_TYPE, player_id):
         else:
             del roles[card]
         quantity -= 1
-        del players[player_id]
         await context.bot.send_message(chat_id=game_chat_id, text=f"RIP {players[player_id].name}")
+        del players[player_id]
 
 
 async def joeover(context: ContextTypes.DEFAULT_TYPE):
@@ -448,7 +446,7 @@ async def joeover(context: ContextTypes.DEFAULT_TYPE):
 async def game(context: ContextTypes.DEFAULT_TYPE, chat_id):
     global game_state
     global day_count
-    day_count = 0
+    day_count = 1
     game_state = True
     logger.info('Game started')
     await context.bot.send_message(chat_id=chat_id, text='Game is started.')
