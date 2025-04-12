@@ -456,12 +456,14 @@ async def game(context: ContextTypes.DEFAULT_TYPE, chat_id):
         'This small company is thriving with such wonderful programmers.',
         'But, unfortunately, the CEO have changed recently,',
         'And the first thing they did in the office was to layoff a part of you and replace with QA-Engineers!',
-        'You all work remotely, and you have no way to determine who is hiding behind the nickname.',
+        'Their only goal is to get all of Programmers fired,',
+        'And to do so they will file bug reports on some of you to make your job harder!',
+        'You all work remotely, and have no way to determine who is hiding behind the nickname.',
         '',
-        'However, not all hope is lost: your Team-Leader has a backdoor to check someone\'s side, but only once per night',
+        'However, not all hope is lost: your Team-Leader has a backdoor to check one\'s side once per night',
         'In daylight, besides mandatory tasks, you will have a secret group chat to discuss current situation.',
-        'After discussion, if the majority of programmers agree to eliminate somebody,',
-        'Your boss will receive a denunciation about this person and fire him immediatly.',
+        'After discussion, if the majority of programmers agree to eliminate someone,',
+        'Your boss will receive a denunciation about this person and fire him immediately.',
         '',
         'Good luck, and may the mind game begin.'
         ])
