@@ -68,7 +68,8 @@ ROLE_GREETING = {
     "Mafioso": '\n'.join(["You are a QA-Engineer.",
                           "Your goal is to get rid of all Programmers and claim company to yourself",
                           "Your special ability is to increase one's tasks difficulty during the night.",
-                          "Good luck, Mafioso, and let the dark forces prevail!"])}
+                          'Every text message from you in this chat will be sent to other QA-Engineers.',
+                          "Good luck, and let the dark forces prevail!"])}
 
 # Enable logging
 logging.basicConfig(
@@ -546,12 +547,18 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     chat_id = update.message.chat_id
-    if registration_state and user_id == chat_id:
+    if registration_state and user_id == chat_id and user_id in players:
         if players[user_id].cf_name is None:
             await update.message.reply_text(f"Handle {update.message.text} added!")
         else:
             await update.message.reply_text(f"Handle changed to {update.message.text}! Previous handle: {players[user_id].cf_name}")
         players[user_id].cf_name = update.message.text
+    elif game_state and user_id == chat_id and user_id in players and players[user_id].card == 'Mafioso':
+        s = f'{players[user_id].name}: *{update.message.text}*'
+        for pl in roles['Mafioso']:
+            if pl != user_id:
+                await context.bot.send_message(chat_id=pl, text=s)
+
 
 # On '/start'
 async def reg_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
