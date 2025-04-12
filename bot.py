@@ -58,14 +58,16 @@ QUANTITY_OF_ROLES = {1: '1 0 0 0 0 0', 2: '1 0 0 1 0 0', 3: '1 1 0 1 0 0', 4: '1
                      11: '1 5 1 2 1 1', 12: '1 5 2 2 1 1', 13: '1 6 2 2 1 1', 14: '1 6 2 3 1 1', 15: '1 7 2 3 1 1',
                      16: '1 7 2 4 1 1'}
 ROLE_GREETING = {
-    "Detective": '\n'.join(["You are a Detective Dylan Burns. Your goal is to save innocents and to destroy mafiosi.",
-                            "Your special ability is to check one's card or to kill somebody during the night.",
-                            "Good luck, Detective, and let the justice prevail!"]),
-    "Innocent": '\n'.join(["You are an Innocent. You are a creature of the day, so at the night you always sleep.",
-                           "Your goal is to destroy mafiosi in your town.",
-                           "Good luck, Innocent, and let the law prevail!"]),
-    "Mafioso": '\n'.join(["You are a Mafioso. Your special ability is to kill one player during the night.",
-                          "However, you have to remember that the cooperation with other mafiosi is crucial for you.",
+    "Detective": '\n'.join(["You are a Team-Leader Dylan Burns.",
+                           "Your goal is to get rid of all QA-engineers in your town, while doing planned tasks",
+                            "Your special ability is to check one's role in the company",
+                            "Good luck, and let the justice prevail!"]),
+    "Innocent": '\n'.join(["You are an Programmer. You don't have sleeping disorders, so at the night you always sleep.",
+                           "Your goal is to get rid of all QA-engineers in your town, while doing planned tasks",
+                           "Good luck, Programmer, and let the justice prevail!"]),
+    "Mafioso": '\n'.join(["You are a QA-Engineer.",
+                          "Your goal is to get rid of all Programmers and claim company to yourself",
+                          "Your special ability is to increase one's tasks difficulty during the night.",
                           "Good luck, Mafioso, and let the dark forces prevail!"])}
 
 # Enable logging
@@ -183,7 +185,7 @@ async def send_roles(context: ContextTypes.DEFAULT_TYPE):
                 if len(roles['Mafioso']) > 1:
                     await context.bot.send_message(
                         chat_id=pl,
-                        text='Other mafiosi: \n{}'.format('\n'.join(players[i].name for i in roles['Mafioso'] if pl != i)),
+                    text='Other QA-Engineers: \n{}'.format('\n'.join(players[i].name for i in roles['Mafioso'] if pl != i)),
                         parse_mode='Markdown'
                     )
         elif role == 'Innocent':
@@ -208,7 +210,7 @@ async def send_tasks(context: ContextTypes.DEFAULT_TYPE):
     for pl in to_send:
         problem = random.choice(tasks[players[pl].difficulty])
         players[pl].task = str(problem["contestId"]) + '/' + problem["index"]
-        await context.bot.send_message(chat_id=pl, text=f"Your new task:\nhttps://codeforces.com/problemset/problem/{players[pl].task}")
+        await context.bot.send_message(chat_id=pl, text=f"Your new task:\nhttps://codeforces.com/problemset/problem/{players[pl].task}\nDeadline: today")
 
     logger.info('Tasks were sent successfully')
 
@@ -230,7 +232,7 @@ async def check_tasks(context: ContextTypes.DEFAULT_TYPE):
                 if r['status'] == 'OK':
                     break
             if r['status'] != 'OK':
-                raise ConnectionError("Unnable to connect")
+                raise ConnectionError("Unable to connect")
             for solve_try in r['result']:
                 problem = solve_try['problem']
                 if "contestId" not in problem or "index" not in problem or "verdict" not in solve_try:
@@ -293,8 +295,8 @@ async def mafioso_fire(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_day = int(message_day)
     if message_day == day_count and night_state and game_state:
         players[player_id].difficulty += 200
-        await query.edit_message_text(text=f"You shot in {players[player_id].name}! \n"\
-                                           f"His problem will be at {players[player_id].difficulty} difficulty")
+        await query.edit_message_text(text=f"You send a massive bug report to {players[player_id].name}! \n"\
+                                           f"His problems will be at {players[player_id].difficulty} difficulty")
     else:
         await query.edit_message_text(text="Too late!")
 
@@ -306,7 +308,11 @@ async def detective_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     player_id = int(player_id)
     message_day = int(message_day)
     if message_day == day_count and night_state and game_state:
-        await query.edit_message_text(text=f"Role of {players[player_id].name} is {players[player_id].card}")
+        role = players[player_id].card
+        if role == 'Mafioso':
+            await query.edit_message_text(text=f"{players[player_id].name} is a QA-Engineer!")
+        else:
+            await query.edit_message_text(text=f"{players[player_id].name} is a Programmer.")
     else:
         await query.edit_message_text(text="Too late!")
 
@@ -327,7 +333,7 @@ async def night_cycle(context: ContextTypes.DEFAULT_TYPE, chat_id):
     await joeover(context)
     if not game_state:
         return
-    await context.bot.send_message(chat_id=chat_id, text=f'Night {day_count} starts')
+    await context.bot.send_message(chat_id=chat_id, text=f'Working day ends. Night {day_count} starts')
     for i in roles.keys():
         i = i.lower()
         if i == 'detective':
@@ -429,11 +435,11 @@ async def joeover(context: ContextTypes.DEFAULT_TYPE):
     global registration_state
     global quantity
     if len(roles['Mafioso']) * 2 >= quantity:
-        await context.bot.send_message(chat_id=game_chat_id, text='Mafia won!')
+        await context.bot.send_message(chat_id=game_chat_id, text='QA-Engineers claimed the company!')
         await stop(context)
         return
     if len(roles['Mafioso']) == 0:
-        await context.bot.send_message(chat_id=game_chat_id, text='Innocent won!')
+        await context.bot.send_message(chat_id=game_chat_id, text='Programmers secured the company!')
         await stop(context)
         return
 
@@ -444,7 +450,23 @@ async def game(context: ContextTypes.DEFAULT_TYPE, chat_id):
     day_count = 0
     game_state = True
     logger.info('Game started')
-    await context.bot.send_message(chat_id=chat_id, text='Game is started. And may the strongest win.')
+    await context.bot.send_message(chat_id=chat_id, text='Game is started.')
+    intro = '\n'.join([
+        'Hello, players! Today you will become workers in <redacted>!',
+        'This small company is thriving with such wonderful programmers.',
+        'But, unfortunately, the CEO have changed recently,',
+        'And the first thing they did in the office was to layoff a part of you and replace with QA-Engineers!',
+        'You all work remotely, and you have no way to determine who is hiding behind the nickname.',
+        '',
+        'However, not all hope is lost: your Team-Leader has a backdoor to check someone\'s side, but only once per night',
+        'In daylight, besides mandatory tasks, you will have a secret group chat to discuss current situation.',
+        'After discussion, if the majority of programmers agree to eliminate somebody,',
+        'Your boss will receive a denunciation about this person and fire him immediatly.',
+        '',
+        'Good luck, and may the mind game begin.'
+        ])
+    await context.bot.send_message(chat_id=chat_id, text=intro)
+    await asyncio.sleep(15)
 
     await distribute_roles()
     await send_roles(context)
