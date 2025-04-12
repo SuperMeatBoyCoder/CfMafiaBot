@@ -57,25 +57,10 @@ QUANTITY_OF_ROLES = {1: '1 0 0 0 0 0', 2: '1 0 0 1 0 0', 3: '1 1 0 1 0 0', 4: '1
                      6: '1 3 0 2 0 0', 7: '1 2 1 3 0 0', 8: '1 3 1 2 1 0', 9: '1 3 1 3 1 0', 10: '1 3 1 3 1 1',
                      11: '1 5 1 2 1 1', 12: '1 5 2 2 1 1', 13: '1 6 2 2 1 1', 14: '1 6 2 3 1 1', 15: '1 7 2 3 1 1',
                      16: '1 7 2 4 1 1'}
-ROLES_PRIORITY = ['prostitute', 'doctor', 'mafioso', 'detective', 'maniac', 'godfather', 'innocent']
 ROLE_GREETING = {
     "Detective": '\n'.join(["You are a Detective Dylan Burns. Your goal is to save innocents and to destroy mafiosi.",
                             "Your special ability is to check one's card or to kill somebody during the night.",
                             "Good luck, Detective, and let the justice prevail!"]),
-    "Doctor": '\n'.join(["You are a Dr. Smolder Bravestone. Your goal is to save innocents and to stay alive.",
-                         "Your special ability is to heal one person during the night",
-                         "Good luck, Doctor, and let the justice prevail!"]),
-    "Prostitute": '\n'.join(["You are a prostitute Sloan Giles",
-                             "Your goal is to survive, however, you are helping innocents.",
-                             "Your special ability is to disable one player for one round during the night.",
-                             "Good luck, Sloan!"]),
-    "Godfather": '\n'.join(["You are a Godfather Vittore Guarente.",
-                            "Your goal is to destroy innocents and to help mafiosi.",
-                            "Your special ability is to disable one player as a voter.",
-                            "Good luck, Godfather, and let the dark forces win!"]),
-    "Maniac": '\n'.join(["You are a Maniac Frank McStein. Your goal is to kill everybody in town.",
-                         "You can kill one player during the night.",
-                         "Good luck, Maniac, and let the forces of madness win!"]),
     "Innocent": '\n'.join(["You are an Innocent. You are a creature of the day, so at the night you always sleep.",
                            "Your goal is to destroy mafiosi in your town.",
                            "Good luck, Innocent, and let the law prevail!"]),
@@ -343,8 +328,7 @@ async def night_cycle(context: ContextTypes.DEFAULT_TYPE, chat_id):
     if not game_state:
         return
     await context.bot.send_message(chat_id=chat_id, text=f'Night {day_count} starts')
-    ordered_roles = sorted(roles.keys(), key=lambda x: ROLES_PRIORITY.index(x.lower()))
-    for i in ordered_roles:
+    for i in roles.keys():
         i = i.lower()
         if i == 'detective':
             await detective(context)
