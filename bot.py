@@ -1,3 +1,5 @@
+import time
+
 import requests
 from telegram import (
     Update,
@@ -199,6 +201,30 @@ async def send_roles(context: ContextTypes.DEFAULT_TYPE):
 
     logger.info('Roles were sent successfully')
 
+def has_solved(player_handle, player_task, delay):
+    time.sleep(delay) # wait to not get flagged as ddos
+    solved = False
+    try:
+        r = dict()
+        for i in range(REQUEST_MAX_TRIES):
+            r = requests.get(f"https://codeforces.com/api/user.status?handle={player_handle}&from=1&count=2").json()
+            if r['status'] == 'OK':
+                break
+        if r['status'] != 'OK':
+            raise ConnectionError("Unable to connect")
+        for solve_try in r['result']:
+            problem = solve_try['problem']
+            if "contestId" not in problem or "index" not in problem or "verdict" not in solve_try:
+                continue
+            task = str(problem["contestId"]) + '/' + problem["index"]
+            if task == player_task and solve_try["verdict"] == 'OK':
+                solved = True
+    except Exception as e:
+        logger.error(f"Error checking tasks: {e}")
+    return solved
+
+
+
 async def send_tasks(context: ContextTypes.DEFAULT_TYPE):
     logger.info('Sending tasks...')
 
@@ -220,6 +246,8 @@ async def send_tasks(context: ContextTypes.DEFAULT_TYPE):
         ]))
     logger.info('Tasks were sent successfully')
 
+import asyncio
+
 async def check_tasks(context: ContextTypes.DEFAULT_TYPE):
     to_check = []
     for role, player in roles.items():
@@ -229,30 +257,14 @@ async def check_tasks(context: ContextTypes.DEFAULT_TYPE):
         elif role != 'Mafioso':
             to_check.append(player)
 
-    for pl in to_check:
-        solved = False
-        try:
-            r = dict()
-            for i in range(REQUEST_MAX_TRIES):
-                r = requests.get(f"https://codeforces.com/api/user.status?handle={players[pl].cf_name}&from=1&count=2").json()
-                await asyncio.sleep(1)
-                if r['status'] == 'OK':
-                    break
-            if r['status'] != 'OK':
-                raise ConnectionError("Unable to connect")
-            for solve_try in r['result']:
-                problem = solve_try['problem']
-                if "contestId" not in problem or "index" not in problem or "verdict" not in solve_try:
-                    continue
-                task = str(problem["contestId"]) + '/' + problem["index"]
-                if task == players[pl].task and solve_try["verdict"] == 'OK':
-                    solved = True
-        except Exception as e:
-            logger.error(f"Error checking tasks: {e}")
+    check_coros = [asyncio.to_thread(has_solved, players[pl].cf_name, players[pl].task, to_check.index(pl)) for pl in to_check]
+    solved_statuses = await asyncio.gather(*check_coros)
+
+    for pl, solved in zip(to_check, solved_statuses):
         if solved:
-            await context.bot.send_message(chat_id=pl, text=f"Congratulation with solving your task!")
+            await context.bot.send_message(chat_id=pl, text="Congratulations on solving your task!")
         else:
-            await context.bot.send_message(chat_id=pl, text=f"You did not solve your task in time.")
+            await context.bot.send_message(chat_id=pl, text="You did not solve your task in time.")
             await kill_player(context, pl)
 
 # Role functions
