@@ -42,6 +42,8 @@ SPECIAL_INNOCENTS = ['doctor', 'prostitute']
 SPECIAL_MAFIOSI = ['godfather']
 OTHERS = ['maniac']
 REQUEST_MAX_TRIES = 3
+MAFIA_POWER = 100 # increase in difficulty after mafia hit
+DIFFICULTY_INCREASE_RATE = 2 # increase in difficulty every "rate" days
 '''
     QUANTITY_OF_ROLES
     It is a dictionary, keys of which are a number of players, the values are the quantities of roles:
@@ -211,8 +213,11 @@ async def send_tasks(context: ContextTypes.DEFAULT_TYPE):
     for pl in to_send:
         problem = random.choice(tasks[players[pl].difficulty])
         players[pl].task = str(problem["contestId"]) + '/' + problem["index"]
-        await context.bot.send_message(chat_id=pl, text=f"Your new task:\nhttps://codeforces.com/problemset/problem/{players[pl].task}\nDeadline: today")
-
+        await context.bot.send_message(chat_id=pl, text='\n'.join([
+            f"Your new task:\nhttps://codeforces.com/problemset/problem/{players[pl].task}",
+            f"Difficulty: {players[pl].difficulty}",
+            f"Deadline: today"
+        ]))
     logger.info('Tasks were sent successfully')
 
 async def check_tasks(context: ContextTypes.DEFAULT_TYPE):
@@ -296,7 +301,7 @@ async def mafioso_fire(update: Update, context: ContextTypes.DEFAULT_TYPE):
     player_id = int(player_id)
     message_day = int(message_day)
     if message_day == day_count and night_state and game_state:
-        players[player_id].difficulty += 100
+        players[player_id].difficulty += MAFIA_POWER
         await query.edit_message_text(text=f"You send a massive bug report to {players[player_id].name}! \n"\
                                            f"His problems will be at {players[player_id].difficulty} difficulty")
     else:
@@ -410,9 +415,12 @@ async def day_cycle(context: ContextTypes.DEFAULT_TYPE, chat_id):
     await context.bot.send_message(chat_id=chat_id, text=f'{quantity} souls remain...')
     await send_tasks(context)
     await asyncio.sleep(DAY_TIME)
-
     await check_tasks(context)
     await voting(context, chat_id)
+    if day_count % DIFFICULTY_INCREASE_RATE == 0:
+        for p in players.values():
+            p.difficulty += 100
+        await context.bot.send_message(chat_id=chat_id, text=f'Problems became a little harder')
     await night_cycle(context, chat_id)
 
 
